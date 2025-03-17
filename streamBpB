@@ -1,56 +1,79 @@
 #!/bin/bash
 
-# Print help message if --help is called
 if [[ "$1" == "--help" ]]; then
-    echo "Program: streamBpB"
-    echo "Version: 1.0.0"
-    echo "Code:    https://github.com/yh1126611/streamBpB"
-    echo "Usage:   streamgc -b <base_sequence> <genome.fasta> <coordinates.txt> <out.tsv>"
+    echo "Program:        streamBpB"
+    echo "Version:        1.0.0"
+    echo "Code:           https://github.com/yh1126611/streamBpB"
     echo ""
-    echo "Calculate the content of consecutive DNA bases (0-1) defined by user-input sequence for every 100 bp window inside 10,000 bp interval from set of coordinates on genome."
-    echo "<coordinates.txt>: a three-column tab-delimited file. Column 1: chromosome; column 2: genomic coordinate; column 3: strand orientation (+|-)"
+    echo "Description:"
+    echo "Calculate the content of consecutive DNA bases (0-1) defined by user-input sequence"
+    echo "for every window inside interval from set of coordinates on genome."
     echo ""
-    echo "Required arguments:"
-    echo "-b       STRING    Input sequence of bases user wishes to find percentage of in genome (e.g. CG) (Non-case-sensitive)"
+    echo "Usage:          streambpb -b <base_sequence> [OPTIONS] <genome.fasta> <coordinates.txt> <out.tsv>"
+    echo ""
+    echo "<coordinates.txt>       Three-column tab-delimited file of coordinates to analyze"
+    echo "                        pattern frequency in vicinity of."
+    echo "                        Column 1: chromosome; column 2: genomic coordinate;"
+    echo "                        column 3: strand orientation (+|-)"
+    echo "Required:"
+    echo "-b, --base      STRING  Sequence to find percentage of (e.g. CG) (Non-case-sensitive)"
+    echo ""
+    echo "Optional:"
+    echo "-i, --interval  INT     Interval from coordinate to be analyzed (bp) [Default 10,000]"
+    echo "-w, --window    INT     Size of each window inside interval (bp) [Default 100]"
     exit 0
 fi
 
-# My way is the only correct way
-if [ $# -ne 5 ]; then
-    echo "Usage: streamgc -b <base_sequence> <genome.fasta> <coordinates.txt> <output.tsv>"
-    exit 1
-fi
+# Initialize defaults
+window_size=100
+interval_size=10000
+b_string=""
 
-# Initialize variables
-b_string=""  # Placeholder for -b option (mandatory)
-
-# Parse optional arguments using getopts
-while getopts ":b:" opt; do
-    case $opt in
-        b)
-            b_string="$OPTARG"  # Set the value of -b option
+# Manual option parsing to handle both short and long options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -b|--base)
+            b_string="$2"
+            shift 2
             ;;
-        \?)
-            echo "Error: Invalid option -$OPTARG" >&2
+        -w|--window)
+            window_size="$2"
+            shift 2
+            ;;
+        -i|--interval)
+            interval_size="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Invalid option: $1" >&2
             exit 1
             ;;
-        :)
-            echo "Error: Option -$OPTARG requires an argument." >&2
-            exit 1
+        *)
+            # Break when non-option arguments are found
+            break
             ;;
     esac
 done
 
-# Shift processed options so that positional arguments are correctly handled
-shift $((OPTIND - 1))
-
-# Check if the mandatory -b option was provided
+# Check mandatory -b/--base
 if [ -z "$b_string" ]; then
-    echo "Error: Option -b requires an argument." >&2
+    echo "Error: Option -b/--base is required" >&2
     exit 1
 fi
 
-# Assign positional arguments to variables
+# Check if interval is bigger than window
+if [ "$interval_size" -le "$window_size" ]; then
+    echo "Error: Interval size ($interval_size) must be larger than window size ($window_size)" >&2
+    exit 1
+fi
+
+# Check remaining positional arguments
+if [ $# -ne 3 ]; then
+    echo "Usage: streambpb -b <base_sequence> [OPTIONS] <genome.fasta> <coordinates.txt> <out.tsv>"
+    exit 1
+fi
+
+# Assign remaining positional arguments
 genome_file="$1"
 coord_file="$2"
 output_file="$3"
@@ -129,25 +152,32 @@ while IFS=$'\t' read -r chrom coord strand; do
         continue
     fi
 
-    # Loop through distances from -10,000 to +10,000 in steps of 100 bp
-    for distance in $(seq -10000 100 10000); do
+    # Calculate the interval boundaries
+    interval_start=$((coord - interval_size))
+    interval_end=$((coord + interval_size))
+
+    # Adjust interval to fit within chromosome boundaries
+    interval_start=$((interval_start < 1 ? 1 : interval_start))
+    interval_end=$((interval_end > chrom_len ? chrom_len : interval_end))
+
+    # Loop through windows within the interval
+    for start in $(seq $interval_start $window_size $((interval_end - window_size + 1))); do
+        end=$((start + window_size - 1))
         
-        # Calculate start and end positions of the window
-        start=$((coord + distance))
-        end=$((start + 99))
-        
-        # Skip windows that fall outside chromosome boundaries
-        if (( start < 1 || end > chrom_len )); then
+        # Skip if window is not fully within the interval and chromosome range
+        if (( start < interval_start || end > interval_end || start < 1 || end > chrom_len )); then
             continue
         fi
+        
+        # Calculate distance from the coordinate
+        distance=$((start - coord))
         
         # Extract sequence using samtools faidx and remove headers/newlines
         seq=$(samtools faidx "$genome_file" "${chrom}:${start}-${end}" | tail -n +2 | tr -d '\n')
         
-        # Calculate GC content for the sequence and output results if valid sequence exists
+        # Calculate content for the sequence and output results
         pattern_ratio=$(calculate_pattern_frequency "$seq" "$b_string")
         echo -e "${chrom}_${coord}\t${distance}\t${pattern_ratio}\t${strand}" >> "$output_file"
-        
     done
     
 done < "$coord_file"
